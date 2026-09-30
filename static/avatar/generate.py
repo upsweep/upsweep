@@ -6,9 +6,13 @@ A 16x16 tile with a pixel letter "U" and a sweep line below it. Uses only the
 Python standard library; writes PNGs, a multi-size favicon.ico and an SVG into
 the directory of this script.
 
-    $ python3 static/avatar/generate.py
+    $ python3 static/avatar/generate.py                  # default theme
+    $ python3 static/avatar/generate.py --theme phosphor
+    $ python3 static/avatar/generate.py --list           # show themes
+    $ python3 static/avatar/generate.py --preview        # all themes, one image
 """
 
+import argparse
 import os
 import struct
 import zlib
@@ -33,23 +37,73 @@ hTTTTTTTTTTTTTTs
 .ssssssssssssss.
 """
 
-PALETTE = {
-    ".": (0, 0, 0, 0),  # transparent (rounded corners)
-    "T": (0x1E, 0x29, 0x3B, 0xFF),  # tile
-    "h": (0x33, 0x41, 0x55, 0xFF),  # tile highlight edge (top, left)
-    "s": (0x0F, 0x17, 0x2A, 0xFF),  # tile shadow edge (bottom, right)
-    "d": (0x13, 0x1B, 0x2C, 0xFF),  # drop shadow of letter and line
-    "U": (0xF8, 0xFA, 0xFC, 0xFF),  # letter
-    "L": (0xF5, 0x9E, 0x0B, 0xFF),  # sweep line (accent)
+# Sprite characters:
+#   T  tile             h  tile edge, top and left
+#   U  letter           s  tile edge, bottom and right
+#   L  sweep line       d  offset below/right of letter and line (glow/shadow)
+#   .  transparent (rounded corners)
+#
+# Colors are hex RGB. Tinting "d" towards the accent gives a faint neon glow.
+THEMES = {
+    "void": dict(  # near-black, ice white, cyan beam
+        T="0b0f17", h="161d2b", s="06080d", d="0c2530", U="e6fbff", L="22d3ee"
+    ),
+    "phosphor": dict(  # green terminal / CRT
+        T="050b07", h="0f1c13", s="020503", d="0b2a16", U="c8ffd8", L="39ff88"
+    ),
+    "ion": dict(  # deep indigo, violet drive glow
+        T="0d0b1a", h="1a1730", s="07060f", d="1e1640", U="ece9ff", L="a78bfa"
+    ),
+    "hud": dict(  # cockpit display, amber readout
+        T="0a0c10", h="171b22", s="050608", d="2a1d05", U="e8eef5", L="ffb000"
+    ),
+    "synth": dict(  # magenta letter, cyan line
+        T="0c0814", h="1c1428", s="06040a", d="2a0f2e", U="ff7ae0", L="00e5ff"
+    ),
+    "frost": dict(  # light variant, clean lab white
+        T="e9eef4", h="f8fafc", s="c9d2dd", d="cfe6f3", U="0b1220", L="0ea5e9"
+    ),
+    "mono": dict(  # low profile, no accent color at all
+        T="111111", h="1c1c1c", s="0a0a0a", d="1a1a1a", U="eeeeee", L="777777"
+    ),
+    "classic": dict(  # the original slate/amber
+        T="1e293b", h="334155", s="0f172a", d="131b2c", U="f8fafc", L="f59e0b"
+    ),
 }
+
+DEFAULT_THEME = "void"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def load_sprite():
+def palette(theme):
+    pal = {".": (0, 0, 0, 0)}
+    for key, hexcolor in THEMES[theme].items():
+        pal[key] = tuple(bytes.fromhex(hexcolor)) + (0xFF,)
+    return pal
+
+
+def load_sprite(theme=DEFAULT_THEME):
     rows = [line for line in SPRITE.strip().splitlines()]
     assert all(len(r) == len(rows[0]) for r in rows), "ragged sprite"
-    return [[PALETTE[c] for c in row] for row in rows]
+    pal = palette(theme)
+    return [[pal[c] for c in row] for row in rows]
+
+
+def preview_sheet(factor=8, gap=2):
+    """All themes side by side, gap in sprite pixels, transparent background."""
+    sprites = [load_sprite(name) for name in THEMES]
+    size = len(sprites[0])
+    blank = (0, 0, 0, 0)
+    rows = []
+    for y in range(size):
+        row = []
+        for i, sprite in enumerate(sprites):
+            if i:
+                row.extend([blank] * gap)
+            row.extend(sprite[y])
+        rows.append(row)
+    return scale(rows, factor)
 
 
 def scale(pixels, factor):
@@ -116,8 +170,9 @@ def encode_svg(pixels):
     )
 
 
-def write(name, data):
-    path = os.path.join(HERE, name)
+def write(outdir, name, data):
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, name)
     mode = "w" if isinstance(data, str) else "wb"
     with open(path, mode) as f:
         f.write(data)
@@ -125,7 +180,35 @@ def write(name, data):
 
 
 def main():
-    pixels = load_sprite()
+    parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    parser.add_argument(
+        "-t",
+        "--theme",
+        default=DEFAULT_THEME,
+        choices=sorted(THEMES),
+        help="color theme (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-o", "--outdir", default=HERE, help="output directory (default: %(default)s)"
+    )
+    parser.add_argument(
+        "-p",
+        "--preview",
+        action="store_true",
+        help="only write preview.png with all themes side by side",
+    )
+    parser.add_argument("-l", "--list", action="store_true", help="list themes")
+    args = parser.parse_args()
+
+    if args.list:
+        for name in THEMES:
+            print(name + (" (default)" if name == DEFAULT_THEME else ""))
+        return
+    if args.preview:
+        write(args.outdir, "preview.png", encode_png(preview_sheet()))
+        return
+
+    pixels = load_sprite(args.theme)
     base = len(pixels)
 
     pngs = {}
@@ -133,10 +216,14 @@ def main():
         pngs[size] = encode_png(scale(pixels, size // base))
 
     for size in (16, 32, 192):
-        write(f"favicon-{size}.png", pngs[size])
-    write("avatar.png", pngs[512])
-    write("favicon.ico", encode_ico([(s, pngs[s]) for s in (16, 32, 48, 64, 256)]))
-    write("avatar.svg", encode_svg(pixels))
+        write(args.outdir, f"favicon-{size}.png", pngs[size])
+    write(args.outdir, "avatar.png", pngs[512])
+    write(
+        args.outdir,
+        "favicon.ico",
+        encode_ico([(s, pngs[s]) for s in (16, 32, 48, 64, 256)]),
+    )
+    write(args.outdir, "avatar.svg", encode_svg(pixels))
 
 
 if __name__ == "__main__":

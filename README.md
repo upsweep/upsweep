@@ -1,2 +1,3 @@
 # upsweep
-Upsweep prototype
+
+> Discover software.

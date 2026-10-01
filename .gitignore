@@ -30,3 +30,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# wip: notes
+notes/2026-10-01-software-discovery-scenarios.md

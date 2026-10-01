@@ -8,8 +8,9 @@ the directory of this script.
 
     $ python3 static/avatar/generate.py                  # default theme
     $ python3 static/avatar/generate.py --theme phosphor
-    $ python3 static/avatar/generate.py --list           # show themes
-    $ python3 static/avatar/generate.py --preview        # all themes, one image
+    $ python3 static/avatar/generate.py --line trail
+    $ python3 static/avatar/generate.py --list           # show themes and lines
+    $ python3 static/avatar/generate.py --preview        # all combinations
 """
 
 import argparse
@@ -17,7 +18,8 @@ import os
 import struct
 import zlib
 
-# Pixel map, 16x16. One character per pixel, see PALETTE.
+# Pixel map, 16x16. One character per pixel, see THEMES. The sweep line (row
+# LINE_ROW) and its glow (the row below) are replaced by one of LINES.
 SPRITE = """
 .hhhhhhhhhhhhhh.
 hTTTTTTTTTTTTTTs
@@ -41,9 +43,10 @@ hTTTTTTTTTTTTTTs
 #   T  tile             h  tile edge, top and left
 #   U  letter           s  tile edge, bottom and right
 #   L  sweep line       d  offset below/right of letter and line (glow/shadow)
-#   .  transparent (rounded corners)
+#   l  dim sweep line   .  transparent (rounded corners)
 #
 # Colors are hex RGB. Tinting "d" towards the accent gives a faint neon glow.
+# "l" is optional, it defaults to "L" blended halfway into the tile.
 THEMES = {
     "void": dict(  # near-black, ice white, cyan beam
         T="0b0f17", h="161d2b", s="06080d", d="0c2530", U="e6fbff", L="22d3ee"
@@ -71,7 +74,20 @@ THEMES = {
     ),
 }
 
+# Sweep line patterns, drawn from the letter's left edge. The letter is 8 pixels
+# wide; 8 / phi = 4.9, so 5 swept and 3 still scanning (5 : 3 : 8, Fibonacci).
+#   L  swept (solid)    l  still scanning (dim)    .  gap
+LINES = {
+    "solid": "LLLLLLLL",  # done
+    "golden": "LLLLL.l.",  # 5 swept, 3 scanning, within the letter width
+    "trail": "LLLLL.l.l",  # scan runs past the letter, towards the edge
+    "dot": "LLLLL.L.",  # like golden, but the dot at full brightness
+}
+
 DEFAULT_THEME = "void"
+DEFAULT_LINE = "golden"
+
+LINE_ROW, LINE_COL = 12, 4
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -80,29 +96,49 @@ def palette(theme):
     pal = {".": (0, 0, 0, 0)}
     for key, hexcolor in THEMES[theme].items():
         pal[key] = tuple(bytes.fromhex(hexcolor)) + (0xFF,)
+    if "l" not in pal:
+        pal["l"] = tuple((a + b) // 2 for a, b in zip(pal["L"], pal["T"]))
     return pal
 
 
-def load_sprite(theme=DEFAULT_THEME):
-    rows = [line for line in SPRITE.strip().splitlines()]
+def sprite_rows(line=DEFAULT_LINE):
+    """Sprite as rows of characters, with the given sweep line drawn in."""
+    rows = [list(row) for row in SPRITE.strip().splitlines()]
     assert all(len(r) == len(rows[0]) for r in rows), "ragged sprite"
+    pattern = LINES[line]
+    assert LINE_COL + len(pattern) < len(rows[0]) - 2, "line too long"
+    beam, glow = rows[LINE_ROW], rows[LINE_ROW + 1]
+    for x in range(1, len(beam) - 1):
+        beam[x] = glow[x] = "T"
+    for i, c in enumerate(pattern):
+        x = LINE_COL + i
+        if c != ".":
+            beam[x] = c
+        if c == "L":  # only the swept part glows
+            glow[x + 1] = "d"
+    return rows
+
+
+def load_sprite(theme=DEFAULT_THEME, line=DEFAULT_LINE):
     pal = palette(theme)
-    return [[pal[c] for c in row] for row in rows]
+    return [[pal[c] for c in row] for row in sprite_rows(line)]
 
 
 def preview_sheet(factor=8, gap=2):
-    """All themes side by side, gap in sprite pixels, transparent background."""
-    sprites = [load_sprite(name) for name in THEMES]
-    size = len(sprites[0])
+    """Grid of all lines (rows) by themes (columns), transparent background."""
     blank = (0, 0, 0, 0)
     rows = []
-    for y in range(size):
-        row = []
-        for i, sprite in enumerate(sprites):
-            if i:
-                row.extend([blank] * gap)
-            row.extend(sprite[y])
-        rows.append(row)
+    for j, line in enumerate(LINES):
+        if j:
+            rows.extend([[blank] * len(rows[0])] * gap)
+        sprites = [load_sprite(theme, line) for theme in THEMES]
+        for y in range(len(sprites[0])):
+            row = []
+            for i, sprite in enumerate(sprites):
+                if i:
+                    row.extend([blank] * gap)
+                row.extend(sprite[y])
+            rows.append(row)
     return scale(rows, factor)
 
 
@@ -189,26 +225,40 @@ def main():
         help="color theme (default: %(default)s)",
     )
     parser.add_argument(
+        "-L",
+        "--line",
+        default=DEFAULT_LINE,
+        choices=list(LINES),
+        help="sweep line style (default: %(default)s)",
+    )
+    parser.add_argument(
         "-o", "--outdir", default=HERE, help="output directory (default: %(default)s)"
     )
     parser.add_argument(
         "-p",
         "--preview",
         action="store_true",
-        help="only write preview.png with all themes side by side",
+        help="only write preview.png, all lines (rows) by themes (columns)",
     )
-    parser.add_argument("-l", "--list", action="store_true", help="list themes")
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="list themes and lines"
+    )
     args = parser.parse_args()
 
     if args.list:
+        print("themes:")
         for name in THEMES:
-            print(name + (" (default)" if name == DEFAULT_THEME else ""))
+            print("  " + name + (" (default)" if name == DEFAULT_THEME else ""))
+        print("lines:")
+        for name, pattern in LINES.items():
+            default = " (default)" if name == DEFAULT_LINE else ""
+            print(f"  {name:<8} {pattern}{default}")
         return
     if args.preview:
         write(args.outdir, "preview.png", encode_png(preview_sheet()))
         return
 
-    pixels = load_sprite(args.theme)
+    pixels = load_sprite(args.theme, args.line)
     base = len(pixels)
 
     pngs = {}
